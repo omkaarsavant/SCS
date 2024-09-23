@@ -1,6 +1,9 @@
 from flask import Flask, render_template, Response
 import cv2
 import numpy as np
+import os
+from deepface import DeepFace
+from scipy.spatial.distance import cosine  # Import cosine similarity function
 
 app = Flask(__name__)
 
@@ -11,6 +14,40 @@ net = cv2.dnn.readNetFromCaffe(configFile, modelFile)
 
 # Open the webcam
 cap = cv2.VideoCapture(0)
+
+# Load the images from dataset folder
+dataset_path = "dataset"
+folders = ['101', '102']  # Folder names for labeling
+faces_db = {}
+
+# Iterate over folders and load the images for comparison
+for folder in folders:
+    folder_path = os.path.join(dataset_path, folder)
+    faces_db[folder] = []
+    for img_name in os.listdir(folder_path):
+        img_path = os.path.join(folder_path, img_name)
+        try:
+            # DeepFace will be used to compare the embeddings of these images later
+            face_representation = DeepFace.represent(img_path, model_name="VGG-Face", enforce_detection=False)[0]["embedding"]
+            faces_db[folder].append(face_representation)
+        except Exception as e:
+            print(f"Error processing image {img_path}: {e}")
+
+# Function to compare a face with the dataset
+def recognize_face(face_img):
+    try:
+        face_rep = DeepFace.represent(face_img, model_name="VGG-Face", enforce_detection=False)[0]["embedding"]
+        
+        # Compare with each face in the dataset
+        for label, representations in faces_db.items():
+            for stored_rep in representations:
+                # Use cosine similarity to compare embeddings
+                similarity = 1 - cosine(stored_rep, face_rep)
+                if similarity > 0.6:  # Adjust similarity threshold if needed
+                    return label
+    except Exception as e:
+        print(f"Error recognizing face: {e}")
+    return 'unknown'
 
 def generate_frames():
     while True:
@@ -29,15 +66,23 @@ def generate_frames():
         net.setInput(blob)
         detections = net.forward()
 
-        # Loop through the detections and draw rectangles around detected faces
+        # Loop through the detections and process each face
         for i in range(detections.shape[2]):
             confidence = detections[0, 0, i, 2]
             if confidence > 0.5:  # Confidence threshold
                 box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
                 (x, y, x1, y1) = box.astype("int")
 
-                # Draw a rectangle around the face
-                cv2.rectangle(frame, (x, y), (x1, y1), (255, 0, 0), 2)
+                # Crop the face from the frame
+                face_img = frame[y:y1, x:x1]
+
+                # Recognize the face
+                label = recognize_face(face_img)
+
+                # Draw a rectangle around the face and display the label
+                color = (0, 255, 0) if label != 'unknown' else (0, 0, 255)
+                cv2.rectangle(frame, (x, y), (x1, y1), color, 2)
+                cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
 
         # Encode the frame in JPEG format
         ret, buffer = cv2.imencode('.jpg', frame)
